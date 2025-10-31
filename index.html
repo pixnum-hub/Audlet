@@ -1,0 +1,226 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1,user-scalable=no" />
+<title>Audlet - Music & Video Player</title>
+<style>
+:root{--bg:#0b0b0b;--card:#1a1a1a;--text:#e0e0e0;--accent:#ff4c00;--muted:#aaaaaa;font-family:Inter,system-ui,"Segoe UI",Roboto,Arial;}
+html,body{margin:0;padding:10px;background:var(--bg);color:var(--text);display:flex;justify-content:center;align-items:flex-start;}
+.player{width:100%;max-width:420px;background:var(--card);border-radius:20px;padding:20px;display:flex;flex-direction:column;gap:16px;position:relative;box-shadow:0 4px 20px rgba(0,0,0,0.5);}
+header{display:flex;justify-content:space-between;align-items:center;}
+header h1{margin:0;font-size:18px;}
+.theme-toggle{width:36px;height:36px;border-radius:50%;border:2px solid var(--accent);display:flex;justify-content:center;align-items:center;cursor:pointer;}
+video,audio{width:100%;border-radius:12px;}
+.controls{display:flex;flex-direction:column;gap:10px;}
+.controls-row{display:flex;gap:8px;align-items:center;justify-content:space-between;flex-wrap:wrap;}
+.controls-row button{flex:1; padding:6px; text-align:center;}
+.seek,input[type=range],select{width:100%;}
+.meta{font-size:12px;color:#aaaaaa;margin-top:2px;}
+.eq-container{display:flex;flex-direction:column;align-items:center;}
+.eq{display:flex;gap:4px;justify-content:center;align-items:flex-end;height:140px;margin-top:16px;}
+.eq input{writing-mode: bt-lr; -webkit-appearance: slider-vertical; height:100px;}
+.eq-labels{display:flex;justify-content:space-between;width:100%;font-size:10px;color:#aaaaaa;margin-top:2px;}
+canvas#spectrum{width:100%;height:200px;background:#000;border-radius:8px;}
+footer{text-align:center;font-size:12px;color:#aaaaaa;margin-top:10px;}
+.volume-display{font-size:12px;color:#ff4c00;margin-left:8px;}
+</style>
+</head>
+<body data-theme="dark">
+<div class="player">
+<header>
+<h1>Audlet</h1>
+<div class="theme-toggle" id="themeToggle" title="Toggle Dark/Light Mode">🌙</div>
+</header>
+<video id="video" controls playsinline hidden></video>
+<audio id="audio" controls></audio>
+<div class="controls">
+<div class="controls-row">
+<button id="openBtn" title="Open Files">📂 Open</button>
+<button id="refreshBtn" title="Refresh Player">🔄 Refresh</button>
+<button id="prevBtn" title="Previous Track">⏮️ Prev</button>
+<button id="playBtn" title="Play/Pause">▶️ Play</button>
+<button id="nextBtn" title="Next Track">⏭️ Next</button>
+<button id="stopBtn" title="Stop">■ Stop</button>
+<button id="loopBtn" title="Toggle Loop">🔁 Loop</button>
+</div>
+<div class="controls-row" style="align-items:center;">
+<label class="meta">Volume</label>
+<input id="vol" type="range" min="0" max="1.5" step="0.01" value="0.3" title="Volume (can boost 150%)">
+<div class="volume-display" id="volDisplay">30%</div>
+</div>
+<div class="controls-row">
+<label class="meta">Speed</label>
+<select id="speed"><option>0.5</option><option>0.75</option><option selected>1</option><option>1.25</option><option>1.5</option><option>2</option></select>
+</div>
+<div class="controls-row">
+<label class="meta">Seek</label>
+<input id="seek" type="range" min="0" max="100" value="0" step="0.1">
+<div class="meta" id="time">00:00 / 00:00</div>
+</div>
+</div>
+<div class="eq-container">
+<canvas id="spectrum"></canvas>
+<div class="eq" id="eq"></div>
+<div class="eq-labels" id="eqLabels"></div>
+<div class="meta">11-Band EQ: 60Hz – 20kHz | Spectrum Variations</div>
+<select id="spectrumType" title="Choose Spectrum Visualization">
+<option value="classicBars">Classic Bar Spectrum</option>
+<option value="circular">Circular Spectrum</option>
+<option value="lineWave">Line Waveform</option>
+<option value="neonBars">Neon Bars</option>
+<option value="mirror">Mirror Spectrum</option>
+<option value="particles">Particle Explosion</option>
+<option value="blob">Blob Visualization</option>
+<option value="bar3D">3D Bar Spectrum</option>
+<option value="waterfall">Spectrum Waterfall</option>
+<option value="radial">Radial Bars with Rotation</option>
+</select>
+</div>
+<footer>© Manik Roy 2025.  All Rights Reserved.</footer>
+</div>
+<script>
+const audio=document.getElementById('audio'),video=document.getElementById('video');
+const playBtn=document.getElementById('playBtn'),prevBtn=document.getElementById('prevBtn'),nextBtn=document.getElementById('nextBtn'),stopBtn=document.getElementById('stopBtn'),loopBtn=document.getElementById('loopBtn');
+const openBtn=document.getElementById('openBtn'),refreshBtn=document.getElementById('refreshBtn');
+const seek=document.getElementById('seek'),vol=document.getElementById('vol'),time=document.getElementById('time'),speed=document.getElementById('speed');
+const themeToggle=document.getElementById('themeToggle');
+const spectrumType=document.getElementById('spectrumType');
+const volDisplay=document.getElementById('volDisplay');
+let playlist=[],current=-1,loop=false;
+
+const eqContainer=document.getElementById('eq');
+const eqLabels=document.getElementById('eqLabels');
+const eqFilters=[];
+const audioCtx=new(window.AudioContext||window.webkitAudioContext)();
+const analyser=audioCtx.createAnalyser();
+analyser.fftSize=2048;
+let source=null;
+const eqFrequencies=[60,125,250,500,1000,2000,4000,8000,12000,16000,20000];
+for(let i=0;i<11;i++){
+  const input=document.createElement('input');
+  input.type='range'; input.min='-12'; input.max='12'; input.value='0'; input.step='0.5';
+  input.addEventListener('input',()=>{if(eqFilters[i]) eqFilters[i].gain.value=input.value});
+  eqContainer.appendChild(input);
+  const label=document.createElement('div');
+  label.textContent=eqFrequencies[i]+'Hz';
+  eqLabels.appendChild(label);
+  const filter=audioCtx.createBiquadFilter(); filter.type='peaking'; filter.frequency.value=eqFrequencies[i]; filter.Q.value=1; filter.gain.value=0;
+  eqFilters.push(filter);
+}
+
+function connectAudio(){
+  if(source) source.disconnect();
+  source=audioCtx.createMediaElementSource(audio);
+  let last=source;
+  eqFilters.forEach(f=>{last.connect(f); last=f;});
+  last.connect(analyser);
+  analyser.connect(audioCtx.destination);
+}
+
+const canvas=document.getElementById('spectrum');
+const ctx=canvas.getContext('2d');
+function resizeCanvas(){canvas.width=canvas.clientWidth; canvas.height=canvas.clientHeight;}
+window.addEventListener('resize',resizeCanvas); resizeCanvas();
+function drawSpectrum(){
+  requestAnimationFrame(drawSpectrum);
+  if ((!audio.src || audio.paused) && (!video.src || video.paused)) return;
+  const el = video.hidden ? audio : video;
+  const bufferLength = analyser.frequencyBinCount;
+  const dataArray = new Uint8Array(bufferLength);
+  analyser.getByteFrequencyData(dataArray);
+  ctx.clearRect(0, 0, canvas.width, canvas.height);
+  const w = canvas.width, h = canvas.height;
+  const type = spectrumType.value;
+  const scaleFactor = 3;
+
+  if (type==='classicBars'||type==='neonBars'||type==='bar3D'){
+    const barWidth=w/bufferLength;
+    for(let i=0;i<bufferLength;i++){
+      const barHeight=Math.sqrt(dataArray[i])*scaleFactor;
+      const hue=i/bufferLength*360;
+      ctx.fillStyle=type==='neonBars'?`hsl(${hue},100%,50%)`:`hsl(${hue},80%,50%)`;
+      ctx.shadowColor=type==='neonBars'?`hsl(${hue},100%,50%)`:'transparent';
+      ctx.shadowBlur=type==='neonBars'?10:0;
+      ctx.fillRect(i*barWidth,h-barHeight,barWidth,barHeight);
+      if(type==='bar3D')ctx.fillRect(i*barWidth+2,h-barHeight/2,barWidth,barHeight/2);
+    }
+  } else if(type==='lineWave'){
+    ctx.beginPath();
+    const sliceWidth=w/bufferLength;
+    let x=0;
+    for(let i=0;i<bufferLength;i++){
+      const y=(dataArray[i]/255)*h*scaleFactor;
+      if(i===0)ctx.moveTo(x,y);else ctx.lineTo(x,y);
+      x+=sliceWidth;
+    }
+    ctx.strokeStyle='hsl(200,100%,50%)'; ctx.lineWidth=2;
+    ctx.shadowColor='hsl(200,100%,50%)'; ctx.shadowBlur=4; ctx.stroke();
+  } else if(type==='circular'||type==='radial'){
+    const cx=w/2, cy=h/2;
+    for(let i=0;i<bufferLength;i+=4){
+      const angle=(i/bufferLength)*Math.PI*2;
+      const radius=Math.sqrt(dataArray[i])*scaleFactor;
+      ctx.beginPath(); ctx.moveTo(cx,cy);
+      ctx.lineTo(cx+radius*Math.cos(angle),cy+radius*Math.sin(angle));
+      ctx.strokeStyle=`hsl(${i/bufferLength*360},100%,50%)`;
+      ctx.shadowColor=`hsl(${i/bufferLength*360},100%,50%)`; ctx.shadowBlur=6; ctx.stroke();
+    }
+  } else if(type==='mirror'){
+    const barWidth=w/bufferLength;
+    for(let i=0;i<bufferLength;i++){
+      const barHeight=Math.sqrt(dataArray[i])*scaleFactor;
+      const hue=i/bufferLength*360;
+      ctx.fillStyle=`hsl(${hue},100%,50%)`;
+      ctx.fillRect(i*barWidth,h/2-barHeight,barWidth,barHeight);
+      ctx.fillRect(i*barWidth,h/2,barWidth,barHeight);
+    }
+  } else if(type==='particles'||type==='blob'||type==='waterfall'){
+    for(let i=0;i<bufferLength;i+=4){
+      const radius=Math.sqrt(dataArray[i])*scaleFactor*0.3;
+      ctx.beginPath();
+      const x=Math.random()*w, y=Math.random()*h;
+      ctx.arc(x,y,radius,0,2*Math.PI);
+      ctx.fillStyle=`hsl(${i/bufferLength*360},100%,50%)`;
+      ctx.shadowColor=`hsl(${i/bufferLength*360},100%,50%)`;
+      ctx.shadowBlur=8; ctx.fill();
+    }
+  }
+}
+drawSpectrum();
+
+// Play function
+function getCurrentEl(){return video.hidden?audio:video;}
+function updatePlayButton(p){playBtn.textContent=p?'⏸️':'▶️';}
+function playIndex(i){if(i<0||i>=playlist.length)return;current=i;const f=playlist[i];
+if(f.type.startsWith('video')){
+  audio.pause(); video.hidden=false; video.src=f.url; video.volume=vol.value; video.play(); video.loop=loop;
+} else {
+  video.hidden=true; video.src=''; audio.src=f.url; connectAudio(); audio.volume=vol.value; audioCtx.resume().then(()=>{audio.play();}); audio.loop=loop;
+}}
+
+// Event listeners
+playBtn.onclick=()=>{audioCtx.resume(); const el=getCurrentEl(); if(el.src){if(el.paused){el.play();updatePlayButton(true);}else{el.pause();updatePlayButton(false);}} else if(playlist.length){playIndex(current===-1?0:current)}};
+prevBtn.onclick=()=>{if(playlist.length)playIndex((current-1+playlist.length)%playlist.length)};
+nextBtn.onclick=()=>{if(playlist.length)playIndex((current+1)%playlist.length)};
+stopBtn.onclick=()=>{audio.pause();video.pause();audio.currentTime=0;video.currentTime=0;updatePlayButton(false)};
+loopBtn.onclick=()=>{loop=!loop;loopBtn.style.color=loop?'var(--accent)':'var(--text)'; audio.loop=video.loop=loop};
+vol.oninput=()=>{audio.volume=vol.value;video.volume=vol.value; volDisplay.textContent=Math.round(vol.value*100)+'%';};
+speed.onchange=()=>{audio.playbackRate=speed.value;video.playbackRate=speed.value};
+seek.oninput=()=>{const el=getCurrentEl(); if(el.duration) el.currentTime=el.duration*(seek.value/100);};
+
+// Open files
+openBtn.onclick=async()=>{
+  const handles=await window.showOpenFilePicker({multiple:true,types:[{description:'Media',accept:{'audio/*':['.mp3','.wav','.ogg'],'video/*':['.mp4','.webm']}}]});
+  playlist=[];
+  for(const h of handles){const f=await h.getFile(); playlist.push({name:f.name,type:f.type,url:URL.createObjectURL(f)});}
+  current=0;
+  playIndex(0);
+};
+
+// Refresh button
+refreshBtn.onclick=()=>{const el=getCurrentEl(); el.pause(); el.currentTime=0; updatePlayButton(false); vol.value=0.3; volDisplay.textContent='30%'; audio.volume=video.volume=0.3;};
+
+</script>
+</body>
+</html>
